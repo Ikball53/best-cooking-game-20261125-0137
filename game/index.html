@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember &amp; Thyme — The Midnight Kitchen</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #17100b; height: 100%; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #wrap { position: relative; }
+  canvas { display: block; background: #241610; border-radius: 10px;
+    box-shadow: 0 0 0 4px #3a2418, 0 18px 50px rgba(0,0,0,.7); }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="1280" height="720"></canvas></div>
+<script>
+"use strict";
+/* =====================================================================
+   EMBER & THYME — The Midnight Kitchen
+   A cozy-chaos cooking game. One file, vanilla JS + canvas, no network.
+   Run the midnight kitchen: take orders, chop, sizzle, plate, serve
+   before patience runs out — and before the pans burn.
+   ===================================================================== */
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = 1280, H = 720;
+
+/* ------------------------- data: ingredients ------------------------- */
+const ING = {
+  egg:     { name: "Egg",     short: "EGG",   color: "#fff3c4", prep: "cook", cook: 4.0 },
+  cheese:  { name: "Cheese",  short: "CHS",   color: "#ffd23f", prep: "direct" },
+  tomato:  { name: "Tomato",  short: "TOM",   color: "#e63946", prep: "chop", chop: 2.5 },
+  pasta:   { name: "Pasta",   short: "PST",   color: "#f4d35e", prep: "cook", cook: 4.0 },
+  basil:   { name: "Basil",   short: "BSL",   color: "#2a9d3f", prep: "direct" },
+  steak:   { name: "Steak",   short: "STK",   color: "#8d4a2f", prep: "cook", cook: 5.0 },
+  butter:  { name: "Butter",  short: "BTR",   color: "#ffe66d", prep: "direct" },
+  pepper:  { name: "Pepper",  short: "PPR",   color: "#3a3a3a", prep: "direct" },
+  rice:    { name: "Rice",    short: "RCE",   color: "#f8f4e8", prep: "cook", cook: 4.0 },
+  chicken: { name: "Chicken", short: "CKN",   color: "#e07a5f", prep: "cook", cook: 5.0 },
+  curry:   { name: "Curry",   short: "CRY",   color: "#e76f1a", prep: "direct" },
+  noodle:  { name: "Noodle",  short: "NDL",   color: "#f2c14e", prep: "cook", cook: 4.0 },
+  pork:    { name: "Pork",    short: "PRK",   color: "#e8a0a8", prep: "cook", cook: 5.0 },
+  chili:   { name: "Chili",   short: "CHL",   color: "#d90429", prep: "direct" },
+};
+const BIN_ORDER = ["egg","cheese","tomato","pasta","basil","steak","butter","pepper",
+                   "rice","chicken","curry","noodle","pork","chili"];
+
+/* ------------------------- data: dishes ------------------------- */
+/* needs: [ingredient, required state] — raw = serve as-is,
+   chopped = off the board, cooked = off the burner. */
+const DISHES = [
+  { id: "omelette", name: "Sunrise Omelette",      price: 8,
+    needs: [["egg","cooked"],["cheese","raw"]], color: "#ffb703",
+    blurb: "Fluffy eggs, melted cheese." },
+  { id: "pasta",    name: "Garden Tomato Pasta",   price: 12,
+    needs: [["pasta","cooked"],["tomato","chopped"],["basil","raw"]], color: "#e63946",
+    blurb: "Twirl, toss, torn basil on top." },
+  { id: "steak",    name: "Ember Pepper Steak",    price: 16,
+    needs: [["steak","cooked"],["butter","raw"],["pepper","raw"]], color: "#8d4a2f",
+    blurb: "Seared over embers, peppered." },
+  { id: "curry",    name: "Golden Chicken Curry",  price: 18,
+    needs: [["rice","cooked"],["chicken","cooked"],["curry","raw"]], color: "#e76f1a",
+    blurb: "Slow spice, golden rice." },
+  { id: "ramen",    name: "Midnight Ramen",        price: 22,
+    needs: [["noodle","cooked"],["egg","cooked"],["pork","cooked"],["chili","raw"]], color: "#d90429",
+    blurb: "Rich broth, springy noodles." },
+];
+
+const DAYS = [
+  { len: 90,  target: 30,  patience: 42 },
+  { len: 90,  target: 55,  patience: 40 },
+  { len: 95,  target: 85,  patience: 38 },
+  { len: 95,  target: 115, patience: 36 },
+  { len: 100, target: 150, patience: 34 },
+];
+const CUSTOMER_NAMES = ["Luna","Milo","Pip","Zara","Gus","Fern","Otto","Bea","Noor","Kit"];
+const SKIN = ["#f2c89b","#e8b07d","#c98d5f","#f7d7b0","#a06b42"];
+
+/* ------------------------- helpers ------------------------- */
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function fmtTime(s) {
+  s = Math.max(0, Math.ceil(s));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); }
+
+/* ------------------------- audio (all synthesized) ------------------------- */
+let AC = null, masterGain = null, musicTimer = null, musicStep = 0;
+function ensureAudio() {
+  if (AC) { if (AC.state === "suspended") AC.resume(); return; }
+  try {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = AC.createGain();
+    masterGain.gain.value = S.muted ? 0 : 0.5;
+    masterGain.connect(AC.destination);
+    startMusic();
+  } catch (e) { AC = null; }
+}
+function tone(freq, dur, type, vol, slideTo) {
+  if (!AC || S.muted) return;
+  try {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type || "sine";
+    o.frequency.setValueAtTime(freq, AC.currentTime);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, AC.currentTime + dur);
+    g.gain.setValueAtTime(vol || 0.15, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + dur);
+    o.connect(g); g.connect(masterGain);
+    o.start(); o.stop(AC.currentTime + dur + 0.02);
+  } catch (e) {}
+}
+function noiseBurst(dur, vol, freq) {
+  if (!AC || S.muted) return;
+  try {
+    const len = Math.floor(AC.sampleRate * dur);
+    const buf = AC.createBuffer(1, len, AC.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = AC.createBufferSource(); src.buffer = buf;
+    const f = AC.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = freq || 1800;
+    const g = AC.createGain(); g.gain.value = vol || 0.2;
+    src.connect(f); f.connect(g); g.connect(masterGain);
+    src.start();
+  } catch (e) {}
+}
+const sfxClick  = () => tone(660, 0.06, "triangle", 0.12);
+const sfxPop    = () => { tone(520, 0.07, "sine", 0.14, 780); };
+const sfxChop   = () => { noiseBurst(0.09, 0.3, 900); tone(180, 0.08, "square", 0.1); };
+const sfxSizzle = () => noiseBurst(0.25, 0.07, 5200);
+const sfxDing   = () => { tone(880, 0.12, "sine", 0.16); setTimeout(() => tone(1318, 0.2, "sine", 0.16), 90); };
+const sfxCoin   = () => { tone(988, 0.08, "square", 0.08); setTimeout(() => tone(1319, 0.14, "square", 0.08), 70); };
+const sfxBuzz   = () => tone(140, 0.35, "sawtooth", 0.16, 90);
+const sfxAngry  = () => { tone(220, 0.15, "sawtooth", 0.14, 160); setTimeout(() => tone(180, 0.2, "sawtooth", 0.14), 120); };
+const sfxTrash  = () => noiseBurst(0.15, 0.2, 500);
+/* tiny music box: warm bass + plucked arpeggio, 8 steps a bar */
+const BASS = [130.8, 98, 110, 146.8, 130.8, 98, 164.8, 146.8];
+const PLUCK = [523.3, 659.3, 783.9, 659.3, 587.3, 783.9, 880, 659.3];
+function startMusic() {
+  if (musicTimer || !AC) return;
+  musicTimer = setInterval(() => {
+    if (!AC || S.muted || S.scene !== "play" || S.paused) return;
+    const step = musicStep++ % 8;
+    tone(BASS[step], 0.22, "triangle", 0.05);
+    if (step % 2 === 0) tone(PLUCK[step], 0.16, "sine", 0.035);
+  }, 260);
+}
+/* ------------------------- state ------------------------- */
+const S = {
+  scene: "title", paused: false, muted: false, frozen: false, showHow: false,
+  day: 1, dayTime: 90, dayLen: 90, dayCoins: 0, coins: 0,
+  combo: 0, lastServeT: -99, bestCombo: 0,
+  served: 0, expired: 0, burntCount: 0, trashed: 0, totalServed: 0,
+  orders: [], nextOrderId: 1,
+  burners: [null, null, null], boards: [null, null],
+  hand: null, plate: [],
+  spawnT: 0, rush: false, rushT: 0, rushDone: false,
+  popups: [], parts: [],
+  msg: "", msgT: 0, banner: "", bannerT: 0,
+  time: 0, shake: 0, mouse: { x: 640, y: 360 },
+  dayPassed: false,
+};
+let HOT = []; // clickable regions rebuilt every frame: {x,y,w,h,kind,data}
+
+/* ------------------------- lookups ------------------------- */
+function dishById(id) { return DISHES.find(d => d.id === id); }
+function unlockedDishes() { return DISHES.slice(0, S.day); }
+function unlockedBins() {
+  const set = new Set();
+  unlockedDishes().forEach(d => d.needs.forEach(n => set.add(n[0])));
+  return BIN_ORDER.filter(i => set.has(i));
+}
+function plateKey(list) { return list.map(p => p.ing + ":" + p.prep).sort().join("|"); }
+function plateMatchesDish(dish) {
+  return plateKey(S.plate) === plateKey(dish.needs.map(n => ({ ing: n[0], prep: n[1] })));
+}
+function matchingOrder() { return S.orders.find(o => plateMatchesDish(dishById(o.dish))); }
+function dishNeedsItem(ing, prep) {
+  return unlockedDishes().some(d => d.needs.some(n => n[0] === ing && n[1] === prep));
+}
+
+/* ------------------------- feedback ------------------------- */
+function popup(x, y, text, color, size) {
+  S.popups.push({ x, y, text, color: color || "#fff", size: size || 18, life: 1.4, max: 1.4 });
+}
+function showMsg(t) { S.msg = t; S.msgT = 3.5; }
+function showBanner(t, dur) { S.banner = t; S.bannerT = dur || 2; }
+function burst(x, y, color, n) {
+  for (let i = 0; i < (n || 10); i++)
+    S.parts.push({ x, y, vx: rand(-70, 70), vy: rand(-110, -20), life: rand(.5, 1), max: 1,
+                   color, size: rand(2, 5), kind: "dot" });
+}
+function steam(x, y, color) {
+  S.parts.push({ x: x + rand(-8, 8), y, vx: rand(-6, 6), vy: rand(-34, -18),
+                 life: rand(.7, 1.3), max: 1.3, color: color || "rgba(255,255,255,.55)",
+                 size: rand(4, 8), kind: "steam" });
+}
+function smoke(x, y, n) {
+  for (let i = 0; i < (n || 8); i++)
+    S.parts.push({ x: x + rand(-14, 14), y: y + rand(-6, 6), vx: rand(-10, 10), vy: rand(-46, -20),
+                   life: rand(.9, 1.6), max: 1.6, color: "rgba(60,60,60,.6)", size: rand(6, 12), kind: "steam" });
+}
+
+/* ------------------------- flow ------------------------- */
+function startDay(n) {
+  const d = DAYS[n - 1];
+  S.day = n; S.scene = "play"; S.paused = false; S.showHow = false;
+  S.dayLen = d.len; S.dayTime = d.len; S.dayCoins = 0;
+  S.combo = 0; S.lastServeT = -99;
+  S.orders = []; S.burners = [null, null, null]; S.boards = [null, null];
+  S.hand = null; S.plate = []; S.spawnT = 1.2; S.rush = false; S.rushDone = false; S.rushT = 0;
+  S.popups = []; S.parts = [];
+  showMsg("Day " + n + " — earn " + d.target + " coins before closing time!");
+  showBanner("DAY " + n + " — " + dishById(DISHES[n - 1].id).name + " joins the menu!", 2.4);
+}
+function endDay() {
+  S.dayPassed = S.dayCoins >= DAYS[S.day - 1].target;
+  S.scene = "dayend";
+  if (S.dayPassed) sfxDing(); else sfxBuzz();
+}
+function nextAfterDayEnd() {
+  if (!S.dayPassed) { startDay(S.day); return; }
+  if (S.day >= 5) { S.scene = "win"; sfxDing(); return; }
+  startDay(S.day + 1);
+}
+function spawnOrder() {
+  if (S.orders.length >= 3) return;
+  const dish = pick(unlockedDishes());
+  const maxP = DAYS[S.day - 1].patience * rand(0.9, 1.1);
+  S.orders.push({ id: S.nextOrderId++, dish: dish.id, patience: maxP, maxPatience: maxP,
+                  name: pick(CUSTOMER_NAMES), skin: pick(SKIN), x: 0, y: 0, born: S.time });
+}
+function serveOrder(o) {
+  const dish = dishById(o.dish);
+  const frac = clamp(o.patience / o.maxPatience, 0, 1);
+  const tip = Math.round(dish.price * frac * 0.5);
+  S.combo = (S.time - S.lastServeT < 10) ? Math.min(S.combo + 1, 5) : 1;
+  S.bestCombo = Math.max(S.bestCombo, S.combo);
+  const mult = 1 + 0.25 * (S.combo - 1);
+  const gain = Math.round((dish.price + tip) * mult);
+  S.coins += gain; S.dayCoins += gain; S.served++; S.totalServed++;
+  S.lastServeT = S.time;
+  S.orders = S.orders.filter(x => x.id !== o.id);
+  S.plate = [];
+  popup(o.x + 108, o.y + 16, "+" + gain + " coins", "#ffd23f", 22);
+  if (S.combo > 1) popup(640, 132, "COMBO x" + S.combo + "!", "#ff7b00", 26);
+  burst(o.x + 108, o.y + 52, "#ffd23f", 16);
+  sfxDing(); setTimeout(sfxCoin, 120);
+  if (S.dayCoins >= DAYS[S.day - 1].target)
+    showMsg("Target reached — keep cooking for bonus coins!");
+}
+function clearPlate() {
+  if (!S.plate.length) return;
+  S.plate = []; S.trashed++;
+  sfxTrash(); showMsg("Plate cleared.");
+}
+
+/* ------------------------- picking up / placing down ------------------------- */
+function pickBin(ing) {
+  if (S.hand) { showMsg("Hands full — place this down first!"); return; }
+  S.hand = { ing, prep: "raw" };
+  sfxPop();
+}
+function useBurner(i) {
+  const b = S.burners[i];
+  if (b && b.state === "burnt") {
+    S.burners[i] = null; S.burntCount++;
+    smoke(112 + i * 116, 235, 6); sfxTrash();
+    showMsg("Binned the burnt mess. Watch the stove!");
+    return;
+  }
+  if (b && b.state === "ready") {
+    if (S.hand) { showMsg("Hands full — place this down first!"); return; }
+    S.hand = { ing: b.ing, prep: "cooked" };
+    S.burners[i] = null; sfxPop();
+    return;
+  }
+  if (b && b.state === "cooking") { showMsg("Still sizzling… give it a moment."); return; }
+  if (!S.hand) return;
+  const ing = ING[S.hand.ing];
+  if (S.hand.prep !== "raw") { showMsg("That is already prepped — it goes on the plate."); return; }
+  if (ing.prep !== "cook") {
+    showMsg(ing.prep === "chop" ? "That needs the chopping board, not the stove."
+                                 : "No cooking needed — straight to the plate.");
+    return;
+  }
+  S.burners[i] = { ing: S.hand.ing, t: 0, dur: ing.cook, state: "cooking", readyT: 0 };
+  S.hand = null; sfxSizzle();
+}
+function useBoard(i) {
+  const b = S.boards[i];
+  if (b && b.state === "ready") {
+    if (S.hand) { showMsg("Hands full — place this down first!"); return; }
+    S.hand = { ing: b.ing, prep: "chopped" };
+    S.boards[i] = null; sfxPop();
+    return;
+  }
+  if (b && b.state === "chopping") { showMsg("Still chopping…"); return; }
+  if (!S.hand) return;
+  const ing = ING[S.hand.ing];
+  if (S.hand.prep !== "raw") { showMsg("That is already prepped — it goes on the plate."); return; }
+  if (ing.prep !== "chop") {
+    showMsg(ing.prep === "cook" ? "That needs the stove, not the board."
+                                 : "No chopping needed — straight to the plate.");
+    return;
+  }
+  S.boards[i] = { ing: S.hand.ing, t: 0, dur: ing.chop, state: "chopping" };
+  S.hand = null; sfxChop();
+}
+function usePlate() {
+  if (!S.hand) return;
+  const h = S.hand;
+  if (!dishNeedsItem(h.ing, h.prep)) {
+    if (h.prep === "raw" && ING[h.ing].prep === "cook") showMsg("Needs cooking on the stove first!");
+    else if (h.prep === "raw" && ING[h.ing].prep === "chop") showMsg("Needs chopping on the board first!");
+    else showMsg("No dish on the menu needs that right now.");
+    sfxBuzz();
+    return;
+  }
+  S.plate.push({ ing: h.ing, prep: h.prep });
+  S.hand = null; sfxPop();
+  const m = matchingOrder();
+  if (m) showMsg("That plate is ready — click the glowing order to serve!");
+}
+function takePlateItem(idx) {
+  if (S.hand) { showMsg("Hands full — place this down first!"); return; }
+  S.hand = S.plate.splice(idx, 1)[0];
+  sfxPop();
+}
+
+/* ------------------------- update ------------------------- */
+function update(dt) {
+  S.time += dt;
+  // particles + popups always animate (cosmetic)
+  for (const p of S.parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  S.parts = S.parts.filter(p => p.life > 0);
+  for (const p of S.popups) { p.y -= 26 * dt; p.life -= dt; }
+  S.popups = S.popups.filter(p => p.life > 0);
+  if (S.msgT > 0) S.msgT -= dt;
+  if (S.bannerT > 0) S.bannerT -= dt;
+  if (S.shake > 0) S.shake = Math.max(0, S.shake - dt * 14);
+  if (S.scene !== "play" || S.paused || S.frozen) return;
+
+  // day clock
+  S.dayTime -= dt;
+  if (S.dayTime <= 0) { S.dayTime = 0; endDay(); return; }
+
+  // rush hour: mid-day surge
+  if (!S.rushDone && S.dayTime < S.dayLen * 0.55) {
+    S.rush = true; S.rushDone = true; S.rushT = 18;
+    showBanner("RUSH HOUR — orders flying in!", 2.5);
+    tone(740, 0.15, "square", 0.1);
+  }
+  if (S.rush) { S.rushT -= dt; if (S.rushT <= 0) S.rush = false; }
+
+  // order spawns
+  S.spawnT -= dt;
+  if (S.spawnT <= 0) { spawnOrder(); S.spawnT = S.rush ? 8 : 14; }
+
+  // patience drains; expired customers storm out
+  for (const o of [...S.orders]) {
+    o.patience -= dt;
+    if (o.patience <= 0) {
+      S.orders = S.orders.filter(x => x.id !== o.id);
+      S.expired++; S.combo = 0; S.shake = 6;
+      popup(o.x + 108, o.y + 40, o.name + " walked out!", "#ff5d5d", 18);
+      sfxAngry();
+    }
+  }
+
+  // combo decays
+  if (S.combo > 0 && S.time - S.lastServeT > 10) S.combo = 0;
+
+  // burners
+  S.burners.forEach((b, i) => {
+    if (!b) return;
+    const cx = 112 + i * 116;
+    if (b.state === "cooking") {
+      b.t += dt;
+      if (Math.random() < dt * 6) steam(cx, 215, "rgba(255,255,255,.5)");
+      if (Math.random() < dt * 2) sfxSizzle();
+      if (b.t >= b.dur) {
+        b.state = "ready"; b.readyT = 0;
+        if (!S.hand) { S.hand = { ing: b.ing, prep: "cooked" }; S.burners[i] = null; sfxPop(); popup(cx, 190, "Cooked!", "#7dff9b", 15); }
+        else popup(cx, 190, "READY — grab it!", "#ffd23f", 15);
+      }
+    } else if (b.state === "ready") {
+      b.readyT += dt;
+      if (Math.random() < dt * 4) steam(cx, 215, "rgba(255,220,120,.6)");
+      if (b.readyT > 3) {
+        b.state = "burnt";
+        smoke(cx, 225, 10); sfxBuzz();
+        showMsg("Something burnt! Click the pan to bin it.");
+      }
+    } else if (b.state === "burnt") {
+      if (Math.random() < dt * 3) smoke(cx, 225, 1);
+    }
+  });
+
+  // chopping boards
+  S.boards.forEach((b, i) => {
+    if (!b) return;
+    const cx = 530 + i * 180;
+    if (b.state === "chopping") {
+      b.t += dt;
+      if (b.t >= b.dur) {
+        b.state = "ready";
+        if (!S.hand) { S.hand = { ing: b.ing, prep: "chopped" }; S.boards[i] = null; sfxPop(); popup(cx, 200, "Chopped!", "#7dff9b", 15); }
+        else popup(cx, 200, "READY — grab it!", "#ffd23f", 15);
+      }
+    }
+  });
+}
+
+/* ------------------------- input ------------------------- */
+function toGame(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) };
+}
+canvas.addEventListener("mousemove", e => { S.mouse = toGame(e); });
+canvas.addEventListener("click", e => {
+  ensureAudio();
+  const p = toGame(e);
+  for (let i = HOT.length - 1; i >= 0; i--) {
+    const h = HOT[i];
+    if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) {
+      dispatchHot(h);
+      return;
+    }
+  }
+  if (S.scene === "title" && S.showHow) S.showHow = false;
+});
+function dispatchHot(h) {
+  switch (h.kind) {
+    case "start": sfxClick(); startDay(1); break;
+    case "how": sfxClick(); S.showHow = !S.showHow; break;
+    case "next": sfxClick(); nextAfterDayEnd(); break;
+    case "again": sfxClick(); S.coins = 0; S.totalServed = 0; S.bestCombo = 0; startDay(1); break;
+    case "mute":
+      S.muted = !S.muted;
+      if (masterGain) masterGain.gain.value = S.muted ? 0 : 0.5;
+      break;
+    case "pause":
+      if (S.scene === "play") { S.paused = !S.paused; sfxClick(); }
+      break;
+    case "bin": if (S.scene === "play" && !S.paused) pickBin(h.data); break;
+    case "burner": if (S.scene === "play" && !S.paused) useBurner(h.data); break;
+    case "board": if (S.scene === "play" && !S.paused) useBoard(h.data); break;
+    case "plate": if (S.scene === "play" && !S.paused) usePlate(); break;
+    case "plateItem": if (S.scene === "play" && !S.paused) takePlateItem(h.data); break;
+    case "order":
+      if (S.scene === "play" && !S.paused) {
+        const o = S.orders.find(x => x.id === h.data);
+        if (o) {
+          if (plateMatchesDish(dishById(o.dish))) serveOrder(o);
+          else { showMsg("Plate doesn't match " + dishById(o.dish).name + " — check the recipe below."); sfxBuzz(); }
+        }
+      }
+      break;
+    case "trash": if (S.scene === "play" && !S.paused) clearPlate(); break;
+  }
+}
+window.addEventListener("keydown", e => {
+  if (e.key === "m" || e.key === "M") {
+    S.muted = !S.muted;
+    if (masterGain) masterGain.gain.value = S.muted ? 0 : 0.5;
+    return;
+  }
+  if (S.scene === "title" && (e.key === "Enter" || e.key === " ")) { ensureAudio(); startDay(1); return; }
+  if ((S.scene === "dayend" || S.scene === "win") && e.key === "Enter") { nextAfterDayEnd(); return; }
+  if (S.scene !== "play") return;
+  if (e.key === "p" || e.key === "P") { S.paused = !S.paused; return; }
+  if (S.paused) return;
+  if (e.key === " ") { const o = matchingOrder(); if (o) serveOrder(o); e.preventDefault(); return; }
+  if (e.key === "c" || e.key === "C") { clearPlate(); return; }
+  const bins = unlockedBins();
+  const idx = ["1","2","3","4","5","6","7","8","9","0","-","=","q","w"].indexOf(e.key);
+  if (idx >= 0 && idx < bins.length) pickBin(bins[idx]);
+});
+
+/* ------------------------- photo mode (for screenshots) ------------------------- */
+const QS = new URLSearchParams(location.search);
+function setupShot(n) {
+  S.frozen = true;
+  S.scene = "play";
+  const mkOrder = (dish, frac, name) => {
+    const maxP = DAYS[S.day - 1].patience;
+    return { id: S.nextOrderId++, dish, patience: maxP * frac, maxPatience: maxP,
+             name: name || pick(CUSTOMER_NAMES), skin: pick(SKIN), x: 0, y: 0, born: 0 };
+  };
+  if (n === 1) {
+    S.day = 2; S.dayLen = 90; S.dayTime = 62; S.coins = 34; S.dayCoins = 34; S.combo = 2;
+    S.orders = [mkOrder("pasta", 0.72, "Luna"), mkOrder("omelette", 0.45, "Milo"), mkOrder("pasta", 0.88, "Pip")];
+    S.plate = [{ ing: "pasta", prep: "cooked" }, { ing: "tomato", prep: "chopped" }];
+    S.burners = [{ ing: "pasta", t: 2.4, dur: 4, state: "cooking", readyT: 0 }, null, null];
+    S.boards = [{ ing: "tomato", t: 1.0, dur: 2.5, state: "chopping" }, null];
+    S.hand = null;
+    showMsg("Pasta is on! Add basil to finish the plate.");
+  } else if (n === 2) {
+    S.day = 3; S.dayLen = 95; S.dayTime = 41; S.coins = 71; S.dayCoins = 71; S.combo = 3;
+    S.orders = [mkOrder("steak", 0.16, "Zara"), mkOrder("pasta", 0.60, "Gus"), mkOrder("omelette", 0.80, "Fern")];
+    S.plate = [{ ing: "steak", prep: "cooked" }, { ing: "butter", prep: "raw" }];
+    S.burners = [{ ing: "steak", t: 5, dur: 5, state: "ready", readyT: 2.2 }, null, null];
+    S.boards = [{ ing: "tomato", t: 2.5, dur: 2.5, state: "ready" }, null];
+    S.hand = null;
+    showMsg("The steak is READY — grab it before it burns! Zara is losing patience…");
+  } else if (n === 3) {
+    S.day = 5; S.dayLen = 100; S.dayTime = 78; S.coins = 128; S.dayCoins = 128; S.combo = 4;
+    S.rush = true; S.rushT = 14;
+    S.orders = [mkOrder("ramen", 0.85, "Noor"), mkOrder("curry", 0.55, "Otto"), mkOrder("steak", 0.40, "Bea")];
+    S.plate = [{ ing: "noodle", prep: "cooked" }, { ing: "egg", prep: "cooked" }, { ing: "pork", prep: "cooked" }];
+    S.burners = [{ ing: "noodle", t: 2.0, dur: 4, state: "cooking", readyT: 0 },
+                 { ing: "pork", t: 3.8, dur: 5, state: "cooking", readyT: 0 }, null];
+    S.boards = [null, null];
+    S.hand = { ing: "chili", prep: "raw" };
+    showMsg("Ramen is one chili away — drop it on the plate!");
+  } else {
+    S.day = 4; S.dayLen = 95; S.dayTime = 25; S.coins = 96; S.dayCoins = 96; S.combo = 2;
+    S.orders = [mkOrder("curry", 0.50, "Kit"), mkOrder("steak", 0.30, "Luna"), mkOrder("pasta", 0.50, "Milo")];
+    S.plate = [{ ing: "rice", prep: "cooked" }, { ing: "chicken", prep: "cooked" }, { ing: "curry", prep: "raw" }];
+    S.burners = [{ ing: "chicken", t: 4.0, dur: 5, state: "cooking", readyT: 0 }, null, null];
+    S.boards = [null, null];
+    S.hand = null;
+    showMsg("Golden Chicken Curry is plated — click the glowing order to serve!");
+  }
+}
+/* ------------------------- ingredient icons ------------------------- */
+function drawIngIcon(x, y, r, id, prep) {
+  ctx.save();
+  ctx.translate(x, y);
+  if (prep === "cooked") {
+    ctx.fillStyle = "rgba(255,170,0,.28)";
+    ctx.beginPath(); ctx.arc(0, 0, r + 4, 0, Math.PI * 2); ctx.fill();
+  }
+  switch (id) {
+    case "egg":
+      ctx.fillStyle = "#fffdf5";
+      ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = prep === "cooked" ? "#ff8c00" : "#ffb703";
+      circle(0, 0, r * 0.45); ctx.fill();
+      if (prep === "cooked") {
+        ctx.strokeStyle = "#b5651d"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2); ctx.stroke();
+      }
+      break;
+    case "cheese":
+      ctx.fillStyle = "#ffd23f";
+      ctx.beginPath(); ctx.moveTo(-r, r * 0.7); ctx.lineTo(0, -r); ctx.lineTo(r, r * 0.7); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#e0a800";
+      circle(-r * 0.25, r * 0.25, r * 0.16); ctx.fill();
+      circle(r * 0.3, r * 0.35, r * 0.12); ctx.fill();
+      circle(0, -r * 0.3, r * 0.13); ctx.fill();
+      break;
+    case "tomato":
+      ctx.fillStyle = "#e63946"; circle(0, 0, r * 0.9); ctx.fill();
+      ctx.fillStyle = "#2a9d3f";
+      ctx.beginPath(); ctx.ellipse(0, -r * 0.85, r * 0.35, r * 0.18, 0, 0, Math.PI * 2); ctx.fill();
+      if (prep === "chopped") {
+        ctx.strokeStyle = "#f1fa8c"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-r * 0.6, 0); ctx.lineTo(r * 0.6, 0); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, -r * 0.6); ctx.lineTo(0, r * 0.6); ctx.stroke();
+      }
+      break;
+    case "pasta":
+      ctx.strokeStyle = prep === "cooked" ? "#e8a93c" : "#f4d35e";
+      ctx.lineWidth = 3; ctx.lineCap = "round";
+      for (let k = -1; k <= 1; k++) {
+        ctx.beginPath(); ctx.moveTo(-r, k * r * 0.5);
+        ctx.bezierCurveTo(-r * 0.3, k * r * 0.5 - r * 0.4, r * 0.3, k * r * 0.5 + r * 0.4, r, k * r * 0.5);
+        ctx.stroke();
+      }
+      break;
+    case "basil":
+      ctx.fillStyle = "#2a9d3f";
+      ctx.beginPath(); ctx.ellipse(-r * 0.3, 0, r * 0.55, r * 0.3, -0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(r * 0.35, -r * 0.1, r * 0.55, r * 0.3, 0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#1b6b2a"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(-r * 0.7, 0); ctx.lineTo(r * 0.7, -r * 0.1); ctx.stroke();
+      break;
+    case "steak":
+      ctx.fillStyle = prep === "cooked" ? "#6b3a24" : "#8d4a2f";
+      roundRect(-r, -r * 0.7, r * 2, r * 1.4, r * 0.4); ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,.45)"; ctx.lineWidth = 3;
+      for (let k = -1; k <= 1; k++) {
+        ctx.beginPath(); ctx.moveTo(-r * 0.6 + k * r * 0.5, -r * 0.6);
+        ctx.lineTo(-r * 0.3 + k * r * 0.5, r * 0.6); ctx.stroke();
+      }
+      break;
+    case "butter":
+      ctx.fillStyle = "#ffe66d"; roundRect(-r * 0.8, -r * 0.5, r * 1.6, r, r * 0.2); ctx.fill();
+      ctx.fillStyle = "#fff3a0"; roundRect(-r * 0.6, -r * 0.35, r, r * 0.35, r * 0.12); ctx.fill();
+      break;
+    case "pepper":
+      ctx.fillStyle = "#3a3a3a";
+      circle(-r * 0.3, 0, r * 0.32); ctx.fill();
+      circle(r * 0.35, -r * 0.2, r * 0.28); ctx.fill();
+      circle(r * 0.2, r * 0.35, r * 0.24); ctx.fill();
+      ctx.fillStyle = "#999"; circle(-r * 0.3, 0, r * 0.1); ctx.fill();
+      break;
+    case "rice":
+      ctx.fillStyle = "#f8f4e8";
+      ctx.beginPath(); ctx.arc(0, r * 0.3, r * 0.85, Math.PI, 0); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "#c9b896"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(0, r * 0.3, r * 0.85, Math.PI, 0); ctx.stroke();
+      ctx.fillStyle = "#e8e0c8";
+      circle(-r * 0.3, -r * 0.1, r * 0.14); ctx.fill();
+      circle(r * 0.25, -r * 0.2, r * 0.12); ctx.fill();
+      break;
+    case "chicken":
+      ctx.fillStyle = prep === "cooked" ? "#b4552d" : "#e07a5f";
+      ctx.beginPath(); ctx.ellipse(-r * 0.1, 0, r * 0.7, r * 0.55, -0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#f5e6c8"; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(r * 0.45, -r * 0.35); ctx.lineTo(r * 0.85, -r * 0.7); ctx.stroke();
+      ctx.fillStyle = "#f5e6c8";
+      circle(r * 0.95, -r * 0.8, r * 0.18); ctx.fill();
+      circle(r * 0.8, -r * 0.95, r * 0.15); ctx.fill();
+      break;
+    case "curry":
+      ctx.fillStyle = "#e76f1a";
+      ctx.beginPath(); ctx.arc(0, r * 0.2, r * 0.85, Math.PI, 0); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "#7a3c08"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(0, r * 0.2, r * 0.85, Math.PI, 0); ctx.stroke();
+      ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(0, r * 0.1, r * 0.45, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+      break;
+    case "noodle":
+      ctx.strokeStyle = prep === "cooked" ? "#e8a93c" : "#f2c14e";
+      ctx.lineWidth = 3; ctx.lineCap = "round";
+      for (let k = 0; k < 3; k++) {
+        ctx.beginPath();
+        ctx.arc(0, r * 0.15, r * (0.75 - k * 0.2), Math.PI * (0.15 + k * 0.3), Math.PI * (0.95 - k * 0.2));
+        ctx.stroke();
+      }
+      break;
+    case "pork":
+      ctx.fillStyle = "#e8a0a8"; roundRect(-r * 0.9, -r * 0.6, r * 1.8, r * 1.2, r * 0.35); ctx.fill();
+      ctx.fillStyle = "#f7cdd2"; roundRect(-r * 0.7, -r * 0.4, r * 1.4, r * 0.8, r * 0.25); ctx.fill();
+      if (prep === "cooked") {
+        ctx.strokeStyle = "#8d4a5a"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-r * 0.6, -r * 0.3); ctx.lineTo(r * 0.6, r * 0.3); ctx.stroke();
+      }
+      break;
+    case "chili":
+      ctx.strokeStyle = "#d90429"; ctx.lineWidth = r * 0.45; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(-r * 0.8, r * 0.4);
+      ctx.quadraticCurveTo(0, r * 0.9, r * 0.8, -r * 0.3); ctx.stroke();
+      ctx.strokeStyle = "#2a9d3f"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(r * 0.8, -r * 0.3); ctx.lineTo(r * 1.05, -r * 0.6); ctx.stroke();
+      break;
+  }
+  ctx.restore();
+}
+
+/* ------------------------- small draw helpers ------------------------- */
+function drawFace(x, y, r, skin, mood) {
+  ctx.fillStyle = skin; circle(x, y, r); ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,.25)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  const ey = y - r * 0.15;
+  if (mood === "angry") {
+    ctx.strokeStyle = "#222"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(x - r * 0.55, ey - r * 0.35); ctx.lineTo(x - r * 0.1, ey - r * 0.1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + r * 0.55, ey - r * 0.35); ctx.lineTo(x + r * 0.1, ey - r * 0.1); ctx.stroke();
+  }
+  ctx.fillStyle = "#222";
+  circle(x - r * 0.35, ey, r * 0.12); ctx.fill();
+  circle(x + r * 0.35, ey, r * 0.12); ctx.fill();
+  ctx.strokeStyle = "#222"; ctx.lineWidth = 2; ctx.beginPath();
+  if (mood === "happy") ctx.arc(x, y + r * 0.25, r * 0.4, Math.PI * 0.15, Math.PI * 0.85);
+  else if (mood === "worried") { ctx.moveTo(x - r * 0.3, y + r * 0.45); ctx.lineTo(x + r * 0.3, y + r * 0.45); }
+  else ctx.arc(x, y + r * 0.75, r * 0.4, Math.PI * 1.15, Math.PI * 1.85);
+  ctx.stroke();
+  if (mood === "angry") {
+    ctx.fillStyle = "rgba(255,60,40,.3)"; circle(x, y, r); ctx.fill();
+  }
+}
+function drawFlame(x, y, s, t) {
+  const f = 1 + Math.sin(t * 9 + x) * 0.15;
+  ctx.fillStyle = "rgba(255,140,0,.85)";
+  ctx.beginPath(); ctx.moveTo(x, y - 26 * s * f);
+  ctx.quadraticCurveTo(x + 12 * s, y - 6 * s, x + 8 * s, y + 6 * s);
+  ctx.quadraticCurveTo(x, y + 12 * s, x - 8 * s, y + 6 * s);
+  ctx.quadraticCurveTo(x - 12 * s, y - 6 * s, x, y - 26 * s * f);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,220,80,.9)";
+  ctx.beginPath(); ctx.moveTo(x, y - 14 * s);
+  ctx.quadraticCurveTo(x + 6 * s, y - 2 * s, x, y + 6 * s);
+  ctx.quadraticCurveTo(x - 6 * s, y - 2 * s, x, y - 14 * s);
+  ctx.fill();
+}
+function drawProgressRing(x, y, r, frac, color) {
+  ctx.strokeStyle = "rgba(0,0,0,.5)"; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = color; ctx.lineWidth = 5; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2); ctx.stroke();
+}
+function drawLabel(text, x, y, size, color, align, bold) {
+  ctx.fillStyle = color || "#fff";
+  ctx.font = (bold ? "bold " : "") + size + "px Georgia, 'Times New Roman', serif";
+  ctx.textAlign = align || "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(text, x, y);
+}
+function drawLabelSans(text, x, y, size, color, align, bold) {
+  ctx.fillStyle = color || "#fff";
+  ctx.font = (bold ? "bold " : "") + size + "px system-ui, -apple-system, 'Segoe UI', sans-serif";
+  ctx.textAlign = align || "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(text, x, y);
+}
+
+/* ------------------------- kitchen backdrop ------------------------- */
+function drawKitchen() {
+  // wall
+  const g = ctx.createLinearGradient(0, 0, 0, 380);
+  g.addColorStop(0, "#3a2318"); g.addColorStop(1, "#241610");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, 384);
+  // bricks
+  ctx.strokeStyle = "rgba(0,0,0,.18)"; ctx.lineWidth = 1;
+  for (let y = 24; y < 380; y += 34) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    for (let x = (y % 68 === 24 ? 0 : 40); x < W; x += 80) {
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 34); ctx.stroke();
+    }
+  }
+  // window with night sky
+  ctx.fillStyle = "#1b2a4a"; roundRect(16, 64, 264, 76, 8); ctx.fill();
+  ctx.strokeStyle = "#6b4a2f"; ctx.lineWidth = 5; roundRect(16, 64, 264, 76, 8); ctx.stroke();
+  ctx.fillStyle = "#f5e9c8"; circle(240, 92, 13); ctx.fill();
+  ctx.fillStyle = "#fff";
+  [[60, 84], [110, 122], [180, 78], [150, 108], [90, 100]].forEach(p => { circle(p[0], p[1], 1.8); ctx.fill(); });
+  ctx.strokeStyle = "#6b4a2f"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(148, 64); ctx.lineTo(148, 140); ctx.stroke();
+  // string lights
+  for (let i = 0; i < 26; i++) {
+    const x = 40 + i * 47, y = 142 + Math.sin(i * 0.9) * 3;
+    ctx.fillStyle = i % 3 === 0 ? "#ffd23f" : i % 3 === 1 ? "#ff9d5c" : "#7dff9b";
+    circle(x, y, 3.2); ctx.fill();
+  }
+  ctx.strokeStyle = "rgba(0,0,0,.35)";
+  ctx.beginPath(); ctx.moveTo(36, 140); ctx.lineTo(1244, 140); ctx.stroke();
+  // counter
+  const cg = ctx.createLinearGradient(0, 384, 0, 720);
+  cg.addColorStop(0, "#7a4a26"); cg.addColorStop(1, "#5a3418");
+  ctx.fillStyle = cg; ctx.fillRect(0, 384, W, 336);
+  ctx.fillStyle = "#8d5a30"; ctx.fillRect(0, 384, W, 10);
+  ctx.strokeStyle = "rgba(0,0,0,.25)";
+  for (let y = 420; y < 720; y += 60) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  // logo top-left
+  drawLabel("EMBER & THYME", 16, 34, 22, "#ffb703", "left", true);
+  drawLabelSans("the midnight kitchen", 16, 54, 12, "#d8b48f", "left", false);
+}
+
+/* ------------------------- order board ------------------------- */
+function drawBoard() {
+  const match = matchingOrder();
+  ctx.fillStyle = "#20241f"; roundRect(300, 10, 680, 118, 10); ctx.fill();
+  ctx.strokeStyle = "#8d6b3f"; ctx.lineWidth = 4; roundRect(300, 10, 680, 118, 10); ctx.stroke();
+  drawLabelSans("ORDER BOARD", 316, 30, 11, "#c9a86a", "left", true);
+  S.orders.forEach((o, i) => {
+    const x = 310 + i * 226, y = 18, w = 214, h = 102;
+    const dish = dishById(o.dish);
+    const frac = clamp(o.patience / o.maxPatience, 0, 1);
+    const mood = frac > 0.55 ? "happy" : frac > 0.28 ? "worried" : "angry";
+    o.x = x; o.y = y;
+    const isMatch = match && match.id === o.id;
+    const pulse = isMatch ? 0.6 + 0.4 * Math.sin(S.time * 6) : 0;
+    ctx.fillStyle = isMatch ? "#3d2f10" : "#2e332b";
+    roundRect(x, y, w, h, 8); ctx.fill();
+    ctx.strokeStyle = isMatch ? "rgba(255,210,63," + (0.6 + pulse * 0.4) + ")" : "#55604f";
+    ctx.lineWidth = isMatch ? 3 : 2;
+    roundRect(x, y, w, h, 8); ctx.stroke();
+    drawFace(x + 30, y + 34, 20, o.skin, mood);
+    drawLabelSans(o.name, x + 56, y + 24, 12, "#ffe9c4", "left", true);
+    drawLabelSans(dish.name, x + 56, y + 42, 11, "#ffb703", "left", false);
+    dish.needs.forEach((n, k) => drawIngIcon(x + 66 + k * 26, y + 64, 10, n[0], n[1]));
+    // patience bar
+    ctx.fillStyle = "rgba(0,0,0,.5)"; roundRect(x + 56, y + 82, 120, 8, 4); ctx.fill();
+    ctx.fillStyle = frac > 0.55 ? "#7dff9b" : frac > 0.28 ? "#ffd23f" : "#ff5d5d";
+    if (frac > 0) { roundRect(x + 56, y + 82, 120 * frac, 8, 4); ctx.fill(); }
+    drawLabelSans(dish.price + "c", x + w - 14, y + 90, 13, "#ffd23f", "right", true);
+    if (isMatch) drawLabelSans("SERVE!", x + w - 14, y + 24, 12, "#ffd23f", "right", true);
+    HOT.push({ x, y, w, h, kind: "order", data: o.id });
+  });
+  for (let i = S.orders.length; i < 3; i++) {
+    const x = 310 + i * 226, y = 18, w = 214, h = 102;
+    ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]); roundRect(x, y, w, h, 8); ctx.stroke(); ctx.setLineDash([]);
+    drawLabelSans("waiting for a hungry customer…", x + w / 2, y + 54, 11, "rgba(255,255,255,.35)", "center", false);
+  }
+}
+
+/* ------------------------- HUD ------------------------- */
+function drawHUD() {
+  const d = DAYS[S.day - 1];
+  const low = S.dayTime < 15;
+  drawLabel(fmtTime(S.dayTime), 1127, 44, 36, low ? "#ff5d5d" : "#fff", "center", true);
+  drawLabelSans("DAY " + S.day + "  ·  " + S.dayCoins + " / " + d.target + " coins", 1127, 68, 14, "#ffd23f", "center", true);
+  ctx.fillStyle = "rgba(0,0,0,.5)"; roundRect(1027, 76, 200, 7, 3); ctx.fill();
+  ctx.fillStyle = "#ffd23f";
+  if (S.dayCoins > 0) { roundRect(1027, 76, 200 * clamp(S.dayCoins / d.target, 0, 1), 7, 3); ctx.fill(); }
+  if (S.combo > 1) {
+    const cy = 96 + Math.sin(S.time * 5) * 2;
+    drawLabelSans("COMBO x" + S.combo, 1127, cy + 8, 17, "#ff7b00", "center", true);
+  }
+  if (S.rush) drawLabelSans("RUSH HOUR!", 1127, 142, 13, "#ff5d5d", "center", true);
+  // mute + pause buttons
+  ctx.fillStyle = "rgba(0,0,0,.45)"; roundRect(1150, 104, 46, 24, 6); ctx.fill();
+  ctx.fillStyle = "rgba(0,0,0,.45)"; roundRect(1202, 104, 46, 24, 6); ctx.fill();
+  drawLabelSans(S.muted ? "MUTE" : "SOUND", 1173, 121, 10, "#ffe9c4", "center", true);
+  drawLabelSans(S.paused ? "PLAY" : "PAUSE", 1225, 121, 10, "#ffe9c4", "center", true);
+  HOT.push({ x: 1150, y: 104, w: 46, h: 24, kind: "mute" });
+  HOT.push({ x: 1202, y: 104, w: 46, h: 24, kind: "pause" });
+}
+
+/* ------------------------- stations ------------------------- */
+function drawStove() {
+  ctx.fillStyle = "#3c3f45"; roundRect(36, 150, 380, 210, 10); ctx.fill();
+  ctx.strokeStyle = "#22242a"; ctx.lineWidth = 3; roundRect(36, 150, 380, 210, 10); ctx.stroke();
+  drawLabelSans("STOVE — click a burner", 52, 176, 12, "#cfd3da", "left", true);
+  S.burners.forEach((b, i) => {
+    const cx = 112 + i * 116, cy = 258;
+    ctx.fillStyle = "#22242a"; circle(cx, cy, 54); ctx.fill();
+    ctx.strokeStyle = "#565b64"; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, 54, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "#31343a"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, 40, 0, Math.PI * 2); ctx.stroke();
+    if (b) {
+      if (b.state === "cooking") {
+        drawFlame(cx - 26, cy + 34, 0.7, S.time);
+        drawFlame(cx + 26, cy + 34, 0.7, S.time + 2);
+        drawIngIcon(cx, cy - 4, 24, b.ing, "raw");
+        drawProgressRing(cx, cy - 4, 32, clamp(b.t / b.dur, 0, 1), "#ff9d5c");
+      } else if (b.state === "ready") {
+        const blink = Math.sin(S.time * 8) > 0;
+        drawIngIcon(cx, cy - 4, 24, b.ing, "cooked");
+        drawLabelSans(blink ? "READY!" : "", cx, cy + 52, 12, "#7dff9b", "center", true);
+        drawProgressRing(cx, cy - 4, 32, 1 - clamp(b.readyT / 3, 0, 1), "#7dff9b");
+      } else if (b.state === "burnt") {
+        ctx.fillStyle = "#111";
+        circle(cx, cy - 4, 24); ctx.fill();
+        drawLabelSans("BURNT!", cx, cy + 52, 12, "#ff5d5d", "center", true);
+      }
+    } else {
+      drawLabelSans("empty burner", cx, cy + 4, 11, "rgba(255,255,255,.3)", "center", false);
+    }
+    HOT.push({ x: cx - 54, y: cy - 54, w: 108, h: 108, kind: "burner", data: i });
+  });
+}
+function drawBoards() {
+  ctx.fillStyle = "#6b4a2f"; roundRect(440, 150, 360, 210, 10); ctx.fill();
+  ctx.strokeStyle = "#4a3018"; ctx.lineWidth = 3; roundRect(440, 150, 360, 210, 10); ctx.stroke();
+  drawLabelSans("CHOPPING BOARD", 456, 176, 12, "#f0d0a8", "left", true);
+  S.boards.forEach((b, i) => {
+    const cx = 530 + i * 180, cy = 252;
+    ctx.fillStyle = "#c89b62"; roundRect(cx - 70, cy - 55, 140, 110, 8); ctx.fill();
+    ctx.strokeStyle = "#8a6a3e"; ctx.lineWidth = 2; roundRect(cx - 70, cy - 55, 140, 110, 8); ctx.stroke();
+    if (b) {
+      drawIngIcon(cx, cy - 8, 24, b.ing, b.state === "ready" ? "chopped" : "raw");
+      if (b.state === "chopping") {
+        const kx = cx + Math.sin(S.time * 14) * 22;
+        ctx.strokeStyle = "#dfe3e8"; ctx.lineWidth = 4; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(kx - 16, cy - 34); ctx.lineTo(kx + 16, cy - 34); ctx.stroke();
+        ctx.fillStyle = "rgba(0,0,0,.5)"; roundRect(cx - 50, cy + 34, 100, 7, 3); ctx.fill();
+        ctx.fillStyle = "#7dff9b"; roundRect(cx - 50, cy + 34, 100 * clamp(b.t / b.dur, 0, 1), 7, 3); ctx.fill();
+      } else {
+        const blink = Math.sin(S.time * 8) > 0;
+        drawLabelSans(blink ? "READY!" : "", cx, cy + 46, 12, "#7dff9b", "center", true);
+      }
+    } else {
+      drawLabelSans("empty board", cx, cy + 4, 11, "rgba(0,0,0,.45)", "center", false);
+    }
+    HOT.push({ x: cx - 70, y: cy - 55, w: 140, h: 110, kind: "board", data: i });
+  });
+}
+function drawPlateStation() {
+  const match = matchingOrder();
+  ctx.fillStyle = "#3c3f45"; roundRect(824, 150, 420, 210, 10); ctx.fill();
+  ctx.strokeStyle = "#22242a"; ctx.lineWidth = 3; roundRect(824, 150, 420, 210, 10); ctx.stroke();
+  drawLabelSans("PLATE — click to add from your hand", 840, 176, 12, "#cfd3da", "left", true);
+  const px = 1000, py = 258;
+  if (match) {
+    const pulse = 0.5 + 0.3 * Math.sin(S.time * 6);
+    ctx.strokeStyle = "rgba(255,210,63," + pulse + ")"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(px, py, 82, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.fillStyle = "#f4f1e6"; circle(px, py, 72); ctx.fill();
+  ctx.strokeStyle = "#b9b29a"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(px, py, 72, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = "#d8d2ba"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 52, 0, Math.PI * 2); ctx.stroke();
+  S.plate.forEach((p, i) => {
+    const a = -Math.PI / 2 + i * (Math.PI * 2 / Math.max(S.plate.length, 1));
+    const ix = px + Math.cos(a) * 30, iy = py + Math.sin(a) * 30;
+    drawIngIcon(ix, iy, 20, p.ing, p.prep);
+    HOT.push({ x: ix - 22, y: iy - 22, w: 44, h: 44, kind: "plateItem", data: i });
+  });
+  if (!S.plate.length) drawLabelSans("empty plate", px, py + 4, 12, "rgba(0,0,0,.4)", "center", false);
+  if (match) drawLabelSans("READY TO SERVE!", px, py + 96, 13, "#ffd23f", "center", true);
+  // trash bin
+  ctx.fillStyle = "#4a4d55"; roundRect(1150, 216, 64, 84, 8); ctx.fill();
+  ctx.strokeStyle = "#2c2e33"; ctx.lineWidth = 3; roundRect(1150, 216, 64, 84, 8); ctx.stroke();
+  ctx.strokeStyle = "#2c2e33"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(1150, 232); ctx.lineTo(1214, 232); ctx.stroke();
+  drawLabelSans("BIN", 1182, 262, 12, "#cfd3da", "center", true);
+  drawLabelSans("clear plate", 1182, 316, 10, "#9aa0aa", "center", false);
+  HOT.push({ x: 928, y: 186, w: 144, h: 144, kind: "plate" });
+  HOT.push({ x: 1150, y: 216, w: 64, h: 84, kind: "trash" });
+}
+
+/* ------------------------- bins + menu ------------------------- */
+function drawBins() {
+  drawLabelSans("INGREDIENTS — click a bin, then a station or the plate  ·  keys 1–0", 36, 408, 13, "#e8c9a0", "left", true);
+  const bins = unlockedBins();
+  const n = bins.length;
+  const gap = 8;
+  const bw = Math.min(96, Math.floor((1208 - (n - 1) * gap) / n));
+  const total = n * bw + (n - 1) * gap;
+  const x0 = 36 + (1208 - total) / 2;
+  bins.forEach((id, i) => {
+    const x = x0 + i * (bw + gap), y = 424, h = 96;
+    const ing = ING[id];
+    ctx.fillStyle = S.hand && S.hand.ing === id ? "#5a3d16" : "#3a2a1a";
+    roundRect(x, y, bw, h, 8); ctx.fill();
+    ctx.strokeStyle = "#8d6b3f"; ctx.lineWidth = 2; roundRect(x, y, bw, h, 8); ctx.stroke();
+    drawIngIcon(x + bw / 2, y + 34, 22, id, "raw");
+    drawLabelSans(ing.name, x + bw / 2, y + 68, 11, "#ffe9c4", "center", true);
+    drawLabelSans(ing.prep === "direct" ? "serve as-is" : ing.prep === "cook" ? "needs stove" : "needs board",
+                  x + bw / 2, y + 86, 9, "#b99a72", "center", false);
+    drawLabelSans(String(i + 1), x + bw - 8, y + 14, 10, "#8d6b3f", "right", true);
+    HOT.push({ x, y, w: bw, h, kind: "bin", data: id });
+  });
+  if (S.msgT > 0) {
+    ctx.globalAlpha = clamp(S.msgT, 0, 1);
+    drawLabelSans(S.msg, 640, 540, 14, "#ffd23f", "center", true);
+    ctx.globalAlpha = 1;
+  }
+  drawLabelSans("TONIGHT'S MENU — serve what the board asks for", 36, 566, 12, "#e8c9a0", "left", true);
+  unlockedDishes().forEach((d, i) => {
+    const x = 36 + i * 242, y = 576, w = 232, h = 112;
+    ctx.fillStyle = "#2e2118"; roundRect(x, y, w, h, 8); ctx.fill();
+    ctx.strokeStyle = d.color; ctx.lineWidth = 2; roundRect(x, y, w, h, 8); ctx.stroke();
+    drawLabelSans(d.name, x + 12, y + 22, 13, "#ffe9c4", "left", true);
+    drawLabelSans(d.price + " coins", x + w - 12, y + 22, 12, "#ffd23f", "right", true);
+    d.needs.forEach((nd, k) => {
+      const ix = x + 24 + k * 46, iy = y + 52;
+      drawIngIcon(ix, iy, 13, nd[0], nd[1]);
+      drawLabelSans(nd[1], ix, iy + 28, 8, "#b99a72", "center", false);
+    });
+    drawLabelSans(d.blurb, x + 12, y + 100, 10, "#b99a72", "left", false);
+  });
+  drawLabelSans("Mouse: click bins, stations, plate & orders  ·  Space serve  ·  C clear plate  ·  M mute  ·  P pause",
+                640, 712, 11, "#8d6b3f", "center", false);
+}
+
+/* ------------------------- hand, particles, overlays ------------------------- */
+function drawHand() {
+  if (!S.hand) return;
+  const m = S.mouse;
+  ctx.fillStyle = "rgba(0,0,0,.4)";
+  circle(m.x + 14, m.y - 14, 26); ctx.fill();
+  drawIngIcon(m.x + 14, m.y - 14, 20, S.hand.ing, S.hand.prep);
+  drawLabelSans(ING[S.hand.ing].name + (S.hand.prep !== "raw" ? " (" + S.hand.prep + ")" : ""),
+                m.x + 14, m.y - 46, 12, "#ffe9c4", "center", true);
+}
+function drawParts() {
+  for (const p of S.parts) {
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    ctx.fillStyle = p.color;
+    circle(p.x, p.y, p.size); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  for (const p of S.popups) {
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    drawLabelSans(p.text, p.x, p.y, p.size, p.color, "center", true);
+  }
+  ctx.globalAlpha = 1;
+}
+function drawBanner() {
+  if (S.bannerT <= 0) return;
+  ctx.fillStyle = "rgba(20,8,4,.82)";
+  ctx.fillRect(0, 196, W, 64);
+  ctx.fillStyle = "#ffb703";
+  ctx.fillRect(0, 196, W, 3); ctx.fillRect(0, 257, W, 3);
+  drawLabel(S.banner, 640, 238, 34, "#ffb703", "center", true);
+}
+function overlayPanel(x, y, w, h) {
+  ctx.fillStyle = "rgba(12,6,3,.88)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#241610"; roundRect(x, y, w, h, 14); ctx.fill();
+  ctx.strokeStyle = "#8d6b3f"; ctx.lineWidth = 3; roundRect(x, y, w, h, 14); ctx.stroke();
+}
+function drawTitle() {
+  overlayPanel(290, 90, 700, 540);
+  drawLabel("EMBER & THYME", 640, 190, 58, "#ffb703", "center", true);
+  drawLabelSans("— THE MIDNIGHT KITCHEN —", 640, 224, 16, "#d8b48f", "center", true);
+  drawLabelSans("Five signature dishes. Three burners. One very hungry night.",
+                640, 262, 15, "#ffe9c4", "center", false);
+  drawLabelSans("Take orders from the board, chop and sizzle each ingredient,",
+                640, 292, 13, "#c9a86a", "center", false);
+  drawLabelSans("plate it exactly right — and serve before patience runs out.",
+                640, 312, 13, "#c9a86a", "center", false);
+  drawLabelSans("Watch the stove: food left too long burns. Serve fast in a row to build a combo.",
+                640, 340, 13, "#c9a86a", "center", false);
+  const dishLine = DISHES.map(d => d.name + " " + d.price + "c").join("   ·   ");
+  drawLabelSans(dishLine, 640, 396, 12, "#ffe9c4", "center", false);
+  ctx.fillStyle = "#ffb703"; roundRect(490, 440, 300, 56, 10); ctx.fill();
+  drawLabelSans("START COOKING", 640, 476, 20, "#241610", "center", true);
+  HOT.push({ x: 490, y: 440, w: 300, h: 56, kind: "start" });
+  ctx.strokeStyle = "#8d6b3f"; ctx.lineWidth = 2; roundRect(490, 512, 300, 44, 10); ctx.stroke();
+  drawLabelSans("HOW TO PLAY", 640, 541, 15, "#ffe9c4", "center", true);
+  HOT.push({ x: 490, y: 512, w: 300, h: 44, kind: "how" });
+  drawLabelSans("Original game — art, music & code made for this entry. No network needed.",
+                640, 606, 11, "#8d6b3f", "center", false);
+  if (S.showHow) {
+    overlayPanel(340, 130, 600, 460);
+    drawLabel("HOW TO PLAY", 640, 190, 30, "#ffb703", "center", true);
+    const lines = [
+      "1. Click an ingredient bin to pick it up.",
+      "2. Chop it on a board, or cook it on a burner.",
+      "3. Click the plate to add prepped ingredients.",
+      "4. When the plate matches an order, it glows gold —",
+      "    click the order (or press Space) to serve.",
+      "5. Food left on a burner too long burns — bin it.",
+      "6. Serve fast in a row to build a COMBO multiplier.",
+      "7. Beat the coin target before the timer ends.",
+      "",
+      "Keys: 1–0 pick ingredients · Space serve · C clear plate",
+      "M mute · P pause · Enter start",
+    ];
+    lines.forEach((l, i) => drawLabelSans(l, 640, 232 + i * 26, 14, "#ffe9c4", "center", false));
+    drawLabelSans("click anywhere to close", 640, 556, 12, "#8d6b3f", "center", false);
+  }
+}
+function drawDayEnd() {
+  const d = DAYS[S.day - 1];
+  overlayPanel(390, 150, 500, 400);
+  drawLabel(S.dayPassed ? "DAY " + S.day + " COMPLETE!" : "DAY " + S.day + " — NOT QUITE",
+            640, 220, 34, S.dayPassed ? "#7dff9b" : "#ff5d5d", "center", true);
+  drawLabelSans("Coins earned: " + S.dayCoins + "  (target " + d.target + ")",
+                640, 268, 17, "#ffe9c4", "center", false);
+  drawLabelSans("Dishes served: " + S.served + "  ·  Walked out: " + S.expired +
+                "  ·  Burnt: " + S.burntCount, 640, 300, 14, "#c9a86a", "center", false);
+  drawLabelSans("Best combo: x" + S.bestCombo + "  ·  Total coins: " + S.coins,
+                640, 328, 14, "#c9a86a", "center", false);
+  drawLabelSans(S.dayPassed
+    ? (S.day >= 5 ? "That was the last night — see how you did!" : "A new dish joins the menu tomorrow night…")
+    : "The customers went home hungry. Try the night again.",
+    640, 366, 14, "#ffe9c4", "center", false);
+  ctx.fillStyle = "#ffb703"; roundRect(540, 420, 200, 50, 10); ctx.fill();
+  drawLabelSans(S.dayPassed ? (S.day >= 5 ? "SEE RESULTS" : "NEXT DAY") : "TRY AGAIN",
+                640, 452, 17, "#241610", "center", true);
+  HOT.push({ x: 540, y: 420, w: 200, h: 50, kind: "next" });
+  drawLabelSans("press Enter to continue", 640, 510, 11, "#8d6b3f", "center", false);
+}
+function drawWin() {
+  overlayPanel(340, 130, 600, 440);
+  drawLabel("MIDNIGHT LEGEND!", 640, 210, 44, "#ffb703", "center", true);
+  drawLabelSans("Five nights, five dishes — the kitchen is yours.",
+                640, 252, 16, "#ffe9c4", "center", false);
+  drawLabelSans("Total coins: " + S.coins, 640, 306, 20, "#ffd23f", "center", true);
+  drawLabelSans("Dishes served: " + S.totalServed + "  ·  Best combo: x" + S.bestCombo +
+                "  ·  Burnt: " + S.burntCount, 640, 344, 14, "#c9a86a", "center", false);
+  drawLabelSans("Thanks for cooking at Ember & Thyme.", 640, 380, 14, "#ffe9c4", "center", false);
+  ctx.fillStyle = "#ffb703"; roundRect(540, 420, 200, 50, 10); ctx.fill();
+  drawLabelSans("COOK AGAIN", 640, 452, 17, "#241610", "center", true);
+  HOT.push({ x: 540, y: 420, w: 200, h: 50, kind: "again" });
+}
+
+/* ------------------------- render + loop ------------------------- */
+function render() {
+  HOT = [];
+  ctx.save();
+  if (S.shake > 0) ctx.translate(rand(-S.shake, S.shake), rand(-S.shake, S.shake));
+  drawKitchen();
+  if (S.scene === "play" || S.scene === "dayend" || S.scene === "win") {
+    drawBoard();
+    drawHUD();
+    drawStove();
+    drawBoards();
+    drawPlateStation();
+    drawBins();
+    drawParts();
+    drawHand();
+    drawBanner();
+    if (S.paused && S.scene === "play") {
+      ctx.fillStyle = "rgba(12,6,3,.7)"; ctx.fillRect(0, 0, W, H);
+      drawLabel("PAUSED", 640, 350, 48, "#ffb703", "center", true);
+      drawLabelSans("press P to keep cooking", 640, 390, 15, "#ffe9c4", "center", false);
+    }
+  }
+  ctx.restore();
+  if (S.scene === "title") drawTitle();
+  else if (S.scene === "dayend") drawDayEnd();
+  else if (S.scene === "win") drawWin();
+}
+function fit() {
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H, 1.15);
+  canvas.style.width = Math.floor(W * s) + "px";
+  canvas.style.height = Math.floor(H * s) + "px";
+}
+window.addEventListener("resize", fit);
+const shotParam = QS.get("shot");
+if (shotParam) setupShot(parseInt(shotParam, 10) || 1);
+fit();
+let lastT = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
